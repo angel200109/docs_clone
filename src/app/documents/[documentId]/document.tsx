@@ -3,10 +3,10 @@ import { Preloaded, usePreloadedQuery } from "convex/react";
 import { api } from "../../../../convex/_generated/api";
 import { Navbar } from "./navbar";
 import { Toolbar } from "./toolbar";
-import Editor from "./editor";
+// import Editor from "./editor";
 import { FullscreenLoader } from "@/components/fullscreen-loader";
-// import { lazy, Suspense } from "react";
-// const LazyEditor = lazy(() => import("./editor"));
+import { lazy, Suspense } from "react";
+const LazyEditor = lazy(() => import("./editor"));
 interface DocumentProps {
     preloadDocument: Preloaded<typeof api.documents.getById>;
 }
@@ -26,11 +26,10 @@ const Document = ({ preloadDocument }: DocumentProps) => {
                 <Toolbar />
             </div>
             <div className="pt-[114px] print:pt-0">
-                <Editor documentContent={document.documentContent} id={document._id} />
-
-                {/* <Suspense fallback={<FullscreenLoader label="Loading editor..." />}>
+                {/* <Editor documentContent={document.documentContent} id={document._id} /> */}
+                <Suspense fallback={<FullscreenLoader label="Loading content..." />}>
                     <LazyEditor documentContent={document.documentContent} id={document._id} />
-                </Suspense> */}
+                </Suspense>
             </div>
         </div>
     );

@@ -19,17 +19,27 @@ import { api } from "../../../convex/_generated/api";
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 export const DocumentTable = () => {
-
     const [search] = useSearchParam();
     const {
         results,
         status,
         loadMore,
-        // isLoading
+        isLoading
     } = usePaginatedQuery(api.documents.get, { search }, { initialNumItems: 5 });
+    // useEffect(() => {
+    //     console.log("results:", results);
+    //     console.log("isloading:", isLoading);
+
+    // }, [results])
+    // const buttonRef = useRef<HTMLButtonElement>(null);
+    // const LoadMoreDocument = async () => {
+    //     await loadMore(5);
+    //     buttonRef.current!.innerText = "no more";
+
+    // }
     return (
         <div className="max-w-screen-xl mx-auto px-16 py-6 flex flex-col gap-5">
-            {!results ? (
+            {!results || results?.length === 0 && isLoading ? (
                 <div className="flex justify-center items-center h-24">
                     <LoaderIcon className="animate-spin text-muted-foreground size-5" />
                 </div>
@@ -43,7 +53,7 @@ export const DocumentTable = () => {
                             <TableHead className="hidden md:table-cell">Created</TableHead>
                         </TableRow>
                     </TableHeader>
-                    {results?.length === 0 ? (
+                    {results?.length === 0 && !isLoading ? (
                         <TableBody>
                             <TableRow className="hover:bg-transparent">
                                 <TableCell colSpan={4} className="h-24 text-center text-muted-foreground">
@@ -60,19 +70,28 @@ export const DocumentTable = () => {
                     )}
                 </Table>
             )}
-            <div className="flex items-center justify-center">
+
+            {status === "CanLoadMore" ? (<div className="flex items-center justify-center">
                 <Button
                     variant="ghost"
                     size="sm"
                     onClick={() => loadMore(5)}
                     disabled={status !== "CanLoadMore"}
                 >
-                    {status === "CanLoadMore"
-                        ? "Load more" // 显示加载更多
-                        : ""}
+                    Load more
                 </Button>
-            </div>
+            </div>) : null}
 
+            {status !== "CanLoadMore" && !isLoading ? (<div className="flex items-center justify-center">
+                <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => loadMore(5)}
+                    disabled
+                >
+                    End of results
+                </Button>
+            </div>) : null}
         </div>
     );
 };

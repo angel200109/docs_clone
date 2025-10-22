@@ -21,7 +21,6 @@ const DocumentIdPage = async ({ params }: DocumentIdPageProps) => {
     );
     return (
         <Document preloadDocument={preloadDocument} />
-
     );
 }
 

@@ -110,10 +110,6 @@ export const getById = query({
     if (!document) {
       throw new ConvexError("Document Not Found");
     }
-    console.log(id);
-
-    console.log(document);
-
     return document;
   },
 });
