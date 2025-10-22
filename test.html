@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>XSS 漏洞示例</title>
+  </head>
+  <body>
+    <h1>论坛页面</h1>
+
+    <!-- 评论表单 -->
+    <form id="commentForm">
+      <label for="comment">发表评论：</label>
+      <textarea id="comment" name="comment" rows="4" cols="50"></textarea><br />
+      <button type="submit">提交评论</button>
+    </form>
+
+    <h2>最新评论</h2>
+    <div id="commentsSection">
+      <!-- 用户提交的评论会显示在这里 -->
+    </div>
+
+    <script>
+      // 模拟存储和显示评论的功能
+      const commentForm = document.getElementById("commentForm");
+      const commentsSection = document.getElementById("commentsSection");
+
+      // 模拟数据库存储的评论（实际上是保存在内存中）
+      const commentsDatabase = [];
+
+      // 提交评论
+      commentForm.addEventListener("submit", (e) => {
+        e.preventDefault();
+        const comment = document.getElementById("comment").value;
+
+        // 在没有过滤和转义的情况下将评论存储到数据库
+        commentsDatabase.push(comment);
+
+        // 刷新评论列表
+        displayComments();
+      });
+
+      // 显示评论
+      function displayComments() {
+        commentsSection.innerHTML = ""; // 清空评论区域
+        commentsDatabase.forEach((comment) => {
+          const commentDiv = document.createElement("div");
+          commentDiv.innerHTML = comment; // 这里直接插入用户的评论，恶意脚本会被执行
+          commentsSection.appendChild(commentDiv);
+        });
+      }
+    </script>
+  </body>
+</html>
