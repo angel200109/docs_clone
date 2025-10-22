@@ -1,6 +1,5 @@
 "use client";
-import { useQuery } from "convex/react";
-import { Id } from "../../../../convex/_generated/dataModel";
+import { Preloaded, usePreloadedQuery } from "convex/react";
 import { api } from "../../../../convex/_generated/api";
 import { Navbar } from "./navbar";
 import { Toolbar } from "./toolbar";
@@ -8,12 +7,16 @@ import Editor from "./editor";
 import { FullscreenLoader } from "@/components/fullscreen-loader";
 // import { lazy, Suspense } from "react";
 // const LazyEditor = lazy(() => import("./editor"));
+interface DocumentProps {
+    preloadDocument: Preloaded<typeof api.documents.getById>;
+}
 // 必须是客户端组件
-const Document = ({ documentId }: { documentId: string }) => {
-    const document = useQuery(api.documents.getById, { id: documentId as Id<"documents"> });
+const Document = ({ preloadDocument }: DocumentProps) => {
+    // const document = useQuery(api.documents.getById, { id: documentId as Id<"documents"> });
     // if (!document) {
     //     throw new Error("Document Not Found"); // ← 就是这里
     // } // 会报错
+    const document = usePreloadedQuery(preloadDocument);
     if (document === undefined) return <FullscreenLoader label="Document loading..." />;
     if (document === null) return <p>Document not found</p>;
     return (

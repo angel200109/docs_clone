@@ -1,26 +1,35 @@
+"use client";
 // import { PaginationStatus } from "convex/react";
-import { Doc } from "../../../convex/_generated/dataModel";
+// import { Doc } from "../../../convex/_generated/dataModel";
 import { LoaderIcon } from "lucide-react";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { DocumentRow } from "./document-row";
 import { Button } from "@/components/ui/button";
-import { PaginationStatus } from "convex/react";
+import { usePaginatedQuery } from "convex/react";
+import { useSearchParam } from "@/hooks/use-search-param";
+import { api } from "../../../convex/_generated/api";
 
-interface DocumentsTableProps {
-    documents: Doc<"documents">[] | undefined;
-    loadMore: (numItems: number) => void;
-    status: PaginationStatus;
-    isLoading: boolean;
+// interface DocumentsTableProps {
+//     documents: Doc<"documents">[] | undefined;
+//     loadMore: (numItems: number) => void;
+//     status: PaginationStatus;
+//     isLoading: boolean;
 
-}
+// }
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-export const DocumentTable = ({ documents, loadMore, status, isLoading }: DocumentsTableProps) => {
+export const DocumentTable = () => {
 
-
+    const [search] = useSearchParam();
+    const {
+        results,
+        status,
+        loadMore,
+        // isLoading
+    } = usePaginatedQuery(api.documents.get, { search }, { initialNumItems: 5 });
     return (
         <div className="max-w-screen-xl mx-auto px-16 py-6 flex flex-col gap-5">
-            {!documents ? (
+            {!results ? (
                 <div className="flex justify-center items-center h-24">
                     <LoaderIcon className="animate-spin text-muted-foreground size-5" />
                 </div>
@@ -34,7 +43,7 @@ export const DocumentTable = ({ documents, loadMore, status, isLoading }: Docume
                             <TableHead className="hidden md:table-cell">Created</TableHead>
                         </TableRow>
                     </TableHeader>
-                    {documents?.length === 0 ? (
+                    {results?.length === 0 ? (
                         <TableBody>
                             <TableRow className="hover:bg-transparent">
                                 <TableCell colSpan={4} className="h-24 text-center text-muted-foreground">
@@ -44,7 +53,7 @@ export const DocumentTable = ({ documents, loadMore, status, isLoading }: Docume
                         </TableBody>
                     ) : (
                         <TableBody>
-                            {documents?.map((document) => (
+                            {results?.map((document) => (
                                 <DocumentRow key={document._id} document={document} />
                             ))}
                         </TableBody>

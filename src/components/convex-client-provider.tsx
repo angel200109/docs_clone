@@ -26,6 +26,5 @@ export function ConvexClientProvider({ children }: { children: ReactNode }) {
                 </AuthLoading>
             </ConvexProviderWithClerk>
         </ClerkProvider>
-
     );
 }
