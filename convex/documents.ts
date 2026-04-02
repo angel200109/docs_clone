@@ -1,104 +1,164 @@
 import { mutation, query } from "./_generated/server";
-import { ConvexError, v } from "convex/values";
+import { v } from "convex/values";
 import { paginationOptsValidator } from "convex/server";
 import { LEFT_MARGIN_DEFUALT, RIGHT_MARGIN_DEFUALT } from "@/constants/margin";
-// 1、获取文档（支持分页和搜索）
+import {
+  getCurrentUserIdOrThrow,
+  requireDocumentOwner,
+  requireDocumentRole,
+} from "./lib/documentPermissions";
+
+const editableRoles = ["owner", "editor"] as const;
+const readableRoles = ["owner", "editor", "viewer"] as const;
+
 export const get = query({
   args: {
-    paginationOpts: paginationOptsValidator, // 分页参数校验器
-    search: v.optional(v.string()), // 可选的搜索关键词
+    paginationOpts: paginationOptsValidator,
+    search: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
+    const userId = await getCurrentUserIdOrThrow(ctx);
     const { paginationOpts, search } = args;
-    // 获取当前登录用户
-    const user = await ctx.auth.getUserIdentity();
-    if (!user) {
-      throw new ConvexError("Unauthorized"); // 如果没有用户，抛出未授权错误
-    }
 
-    // 情况1：用户输入了搜索词
     if (search) {
       return await ctx.db
         .query("documents")
-        .withSearchIndex(
-          "search_title",
-          (q) => q.search("title", search).eq("ownerId", user.subject) // 搜索标题并限定为用户个人文档
+        .withSearchIndex("search_title", (q) =>
+          q.search("title", search).eq("ownerId", userId)
         )
         .paginate(paginationOpts);
     }
 
-    // 情况2:返回当前用户的所有个人文档
     return await ctx.db
       .query("documents")
-      .withIndex("by_owner_id", (q) => q.eq("ownerId", user.subject)) // 查询用户本人创建的文档
+      .withIndex("by_owner_id", (q) => q.eq("ownerId", userId))
       .paginate(paginationOpts);
   },
 });
 
-// 2、新增文档
+export const listAccessible = query({
+  args: {
+    search: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const userId = await getCurrentUserIdOrThrow(ctx);
+    const normalizedSearch = args.search?.trim().toLowerCase();
+
+    const ownedDocuments = await ctx.db
+      .query("documents")
+      .withIndex("by_owner_id", (q) => q.eq("ownerId", userId))
+      .collect();
+
+    const memberships = await ctx.db
+      .query("documentMembers")
+      .withIndex("by_user_id", (q) => q.eq("userId", userId))
+      .collect();
+
+    const accessibleDocuments = new Map<string, {
+      document: (typeof ownedDocuments)[number];
+      role: "owner" | "editor" | "viewer";
+      source: "owned" | "shared";
+    }>();
+
+    for (const document of ownedDocuments) {
+      accessibleDocuments.set(document._id, {
+        document,
+        role: "owner",
+        source: "owned",
+      });
+    }
+
+    for (const membership of memberships) {
+      const existing = accessibleDocuments.get(membership.documentId);
+      if (existing) {
+        if (membership.role === "owner") {
+          existing.role = "owner";
+          existing.source = "owned";
+        }
+        continue;
+      }
+
+      const document = await ctx.db.get(membership.documentId);
+      if (!document) {
+        continue;
+      }
+
+      accessibleDocuments.set(document._id, {
+        document,
+        role: membership.role,
+        source: document.ownerId === userId ? "owned" : "shared",
+      });
+    }
+
+    return Array.from(accessibleDocuments.values())
+      .filter(({ document }) => {
+        if (!normalizedSearch) {
+          return true;
+        }
+
+        return document.title.toLowerCase().includes(normalizedSearch);
+      })
+      .sort((a, b) => b.document._creationTime - a.document._creationTime)
+      .map(({ document, role, source }) => ({
+        ...document,
+        accessRole: role,
+        isOwner: role === "owner",
+        source,
+      }));
+  },
+});
+
 export const create = mutation({
   args: {
     title: v.optional(v.string()),
     documentContent: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    const user = await ctx.auth.getUserIdentity();
-    if (!user) {
-      throw new ConvexError("Unauthorized");
-    }
-    return await ctx.db.insert("documents", {
+    const userId = await getCurrentUserIdOrThrow(ctx);
+    const now = Date.now();
+
+    const documentId = await ctx.db.insert("documents", {
       title: args.title ?? "Untitled document",
-      ownerId: user.subject,
+      ownerId: userId,
       documentContent: args.documentContent,
       leftMargin: LEFT_MARGIN_DEFUALT,
       rightMargin: RIGHT_MARGIN_DEFUALT,
     });
+
+    await ctx.db.insert("documentMembers", {
+      documentId,
+      userId,
+      role: "owner",
+      invitedBy: userId,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    return documentId;
   },
 });
 
-// 3、删除文档
 export const removeById = mutation({
   args: {
     id: v.id("documents"),
   },
   handler: async (ctx, args) => {
-    // 1. 身份验证：获取当前用户身份
-    const user = await ctx.auth.getUserIdentity();
-    if (!user) {
-      throw new ConvexError("Unauthorized"); // 未登录用户无权操作
-    }
+    await requireDocumentOwner(ctx, args.id);
 
-    // 2. 检查文档是否存在：根据ID查询文档
-    const document = await ctx.db.get(args.id);
-    if (!document) {
-      throw new ConvexError("Document not found"); // 文档不存在
-    }
-    // 3. 权限验证：检查当前用户是否是文档的所有者
-    const isOwner = document.ownerId === user.subject;
-    if (!isOwner) {
-      throw new ConvexError("Unauthorized");
-    }
-    // 4. 执行删除操作：删除指定ID的文档
+    const members = await ctx.db
+      .query("documentMembers")
+      .withIndex("by_document_id", (q) => q.eq("documentId", args.id))
+      .collect();
+
+    await Promise.all(members.map((member) => ctx.db.delete(member._id)));
     return ctx.db.delete(args.id);
   },
 });
 
-// 4、修改文档名字
 export const renameById = mutation({
   args: { id: v.id("documents"), title: v.string() },
   handler: async (ctx, args) => {
-    const user = await ctx.auth.getUserIdentity();
-    if (!user) {
-      throw new ConvexError("Unauthorized");
-    }
-    const document = await ctx.db.get(args.id);
-    if (!document) {
-      throw new ConvexError("Document not found");
-    }
-    const isOwner = document.ownerId === user.subject;
-    if (!isOwner) {
-      throw new ConvexError("Unauthorized");
-    }
+    await requireDocumentRole(ctx, args.id, [...editableRoles]);
     return await ctx.db.patch(args.id, { title: args.title });
   },
 });
@@ -106,11 +166,35 @@ export const renameById = mutation({
 export const getById = query({
   args: { id: v.id("documents") },
   handler: async (ctx, { id }) => {
-    const document = await ctx.db.get(id);
-    if (!document) {
-      throw new ConvexError("Document Not Found");
-    }
+    const { document } = await requireDocumentRole(ctx, id, [...readableRoles]);
     return document;
+  },
+});
+
+export const getAccessById = query({
+  args: { id: v.id("documents") },
+  handler: async (ctx, { id }) => {
+    const { role } = await requireDocumentRole(ctx, id, [...readableRoles]);
+
+    return {
+      role,
+      canEdit: role === "owner" || role === "editor",
+      canManageMembers: role === "owner",
+      canDelete: role === "owner",
+    };
+  },
+});
+
+export const getCollaborationStateById = query({
+  args: { id: v.id("documents") },
+  handler: async (ctx, { id }) => {
+    const { document } = await requireDocumentRole(ctx, id, [...readableRoles]);
+
+    return {
+      yjsState: document.yjsState,
+      yjsStateUpdatedAt: document.yjsStateUpdatedAt,
+      documentContent: document.documentContent,
+    };
   },
 });
 
@@ -120,45 +204,53 @@ export const updateContentById = mutation({
     documentContent: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    const { id, documentContent } = args;
-    // 获取当前用户身份
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) {
-      throw new Error("Not authenticated");
-    }
-    // 检查文档是否存在且用户有权限修改
-    const existingDoc = await ctx.db.get(id);
-    if (!existingDoc) {
-      throw new Error("Document not found");
-    }
-    // 检查用户是否是文档所有者
-    if (existingDoc.ownerId !== identity.subject) {
-      throw new Error("Not authorized to update this document");
-    }
-    // 只更新 documentContent 字段
-    await ctx.db.patch(id, { documentContent });
+    await requireDocumentRole(ctx, args.id, [...editableRoles]);
+    await ctx.db.patch(args.id, { documentContent: args.documentContent });
+
     return {
       success: true,
-      id,
-      updated: !!documentContent, // 返回是否进行了更新
+      id: args.id,
+      updated: !!args.documentContent,
     };
   },
 });
 
-// 获取当前文档边距
+export const updateCollaborationStateById = mutation({
+  args: {
+    id: v.id("documents"),
+    yjsState: v.string(),
+    documentContent: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    await requireDocumentRole(ctx, args.id, [...editableRoles]);
+    const now = Date.now();
+
+    await ctx.db.patch(args.id, {
+      yjsState: args.yjsState,
+      yjsStateUpdatedAt: now,
+      documentContent: args.documentContent,
+    });
+
+    return {
+      success: true,
+      id: args.id,
+      updatedAt: now,
+    };
+  },
+});
+
 export const getMargins = query({
   args: { id: v.id("documents") },
   handler: async (ctx, args) => {
-    const doc = await ctx.db.get(args.id);
-    if (!doc) throw new Error("Document not found");
+    const { document } = await requireDocumentRole(ctx, args.id, [...readableRoles]);
+
     return {
-      leftMargin: doc.leftMargin,
-      rightMargin: doc.rightMargin,
+      leftMargin: document.leftMargin,
+      rightMargin: document.rightMargin,
     };
   },
 });
 
-// 更新文档边距
 export const updateMargins = mutation({
   args: {
     id: v.id("documents"),
@@ -166,6 +258,7 @@ export const updateMargins = mutation({
     rightMargin: v.number(),
   },
   handler: async (ctx, args) => {
+    await requireDocumentRole(ctx, args.id, [...editableRoles]);
     await ctx.db.patch(args.id, {
       leftMargin: args.leftMargin,
       rightMargin: args.rightMargin,

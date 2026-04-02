@@ -13,7 +13,9 @@ import type {
   FilterApi,
   FunctionReference,
 } from "convex/server";
+import type * as documentMembers from "../documentMembers.js";
 import type * as documents from "../documents.js";
+import type * as lib_documentPermissions from "../lib/documentPermissions.js";
 
 /**
  * A utility for referencing Convex functions in your app's API.
@@ -24,7 +26,9 @@ import type * as documents from "../documents.js";
  * ```
  */
 declare const fullApi: ApiFromModules<{
+  documentMembers: typeof documentMembers;
   documents: typeof documents;
+  "lib/documentPermissions": typeof lib_documentPermissions;
 }>;
 export declare const api: FilterApi<
   typeof fullApi,
