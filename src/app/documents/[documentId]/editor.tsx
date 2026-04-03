@@ -21,6 +21,7 @@ import Link from "@tiptap/extension-link";
 import TextAlign from "@tiptap/extension-text-align";
 import { HocuspocusProvider } from "@hocuspocus/provider";
 import * as Y from "yjs";
+import { IndexeddbPersistence } from "y-indexeddb";
 
 import { FontSizeExtension } from "@/app/extensions/font-size";
 import { LineHeightExtension } from "@/app/extensions/line-height";
@@ -32,6 +33,10 @@ import { Id } from "../../../../convex/_generated/dataModel";
 import { useDebounce } from "@/hooks/use-debounce";
 import { useDocumentStatus } from "@/store/use-document-status";
 import { useRulerStore } from "@/store/use-ruler-store";
+import {
+  createLocalYjsPersistence,
+  waitForLocalYjsPersistence,
+} from "@/lib/yjs-local-persistence";
 import { Ruler } from "./ruler";
 
 interface EditorProps {
@@ -87,21 +92,9 @@ function buildExtensions(
   ];
 }
 
-function uint8ArrayToBase64(uint8Array: Uint8Array) {
-  let binary = "";
-  uint8Array.forEach((byte) => {
-    binary += String.fromCharCode(byte);
-  });
-  return btoa(binary);
-}
-
-function base64ToUint8Array(base64: string) {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-  return bytes;
+function getCollaborationFragmentLength(ydoc: Y.Doc) {
+  const fragment = ydoc.getXmlFragment("default") as { length?: number };
+  return fragment.length ?? 0;
 }
 
 const Editor = ({ documentContent, id, canEdit }: EditorProps) => {
@@ -109,24 +102,25 @@ const Editor = ({ documentContent, id, canEdit }: EditorProps) => {
   const { setEditor } = useEditorState();
   const { setStatus, resetStatusAfterSave } = useDocumentStatus();
   const updateContentById = useMutation(api.documents.updateContentById);
-  const updateCollaborationStateById = useMutation(api.documents.updateCollaborationStateById);
   const { leftMargin, rightMargin } = useRulerStore();
   const margins = useQuery(api.documents.getMargins, { id: id! });
-  const collaborationState = useQuery(
-    api.documents.getCollaborationStateById,
-    id ? { id } : "skip"
-  );
   const providerRef = useRef<HocuspocusProvider | null>(null);
+  const persistenceRef = useRef<IndexeddbPersistence | null>(null);
   const yDocRef = useRef<Y.Doc | null>(null);
   const [collaborationToken, setCollaborationToken] = useState<string | null>(null);
   const [collaborationSessionKey, setCollaborationSessionKey] = useState(0);
   const [isLoadingCollaboration, setIsLoadingCollaboration] = useState(false);
+  const [isLoadingLocalPersistence, setIsLoadingLocalPersistence] = useState(false);
   const [collaborationError, setCollaborationError] = useState<string | null>(null);
+  const [localPersistenceReady, setLocalPersistenceReady] = useState(false);
 
   const collaborationUrl = process.env.NEXT_PUBLIC_HOCUSPOCUS_URL;
   const collaborationConfigured = Boolean(collaborationUrl && id);
-  const collaborationReady = collaborationConfigured ? collaborationState !== undefined : true;
-  const collaborationActive = collaborationConfigured && !!collaborationToken && !!yDocRef.current;
+  const collaborationActive =
+    collaborationConfigured &&
+    localPersistenceReady &&
+    !!collaborationToken &&
+    !!yDocRef.current;
 
   useEffect(() => {
     console.log("[documents/editor] mounted", {
@@ -138,7 +132,7 @@ const Editor = ({ documentContent, id, canEdit }: EditorProps) => {
   }, []);
 
   useEffect(() => {
-    if (!collaborationConfigured || !collaborationReady) {
+    if (!collaborationConfigured) {
       return;
     }
 
@@ -192,29 +186,88 @@ const Editor = ({ documentContent, id, canEdit }: EditorProps) => {
       cancelled = true;
       controller.abort();
     };
-  }, [collaborationConfigured, collaborationReady, id]);
+  }, [collaborationConfigured, id]);
 
   useEffect(() => {
-    if (!collaborationConfigured || !collaborationToken || !id || !collaborationUrl || !collaborationReady) {
+    if (!collaborationConfigured || !id) {
+      return;
+    }
+
+    let cancelled = false;
+    setIsLoadingLocalPersistence(true);
+    setLocalPersistenceReady(false);
+    setCollaborationError(null);
+
+    providerRef.current?.destroy();
+    persistenceRef.current?.destroy();
+    yDocRef.current?.destroy();
+
+    const ydoc = new Y.Doc();
+    const persistence = createLocalYjsPersistence(String(id), ydoc);
+
+    yDocRef.current = ydoc;
+    persistenceRef.current = persistence;
+
+    const initializeLocalPersistence = async () => {
+      try {
+        await waitForLocalYjsPersistence(persistence);
+        if (cancelled) {
+          return;
+        }
+
+        console.log("[documents/editor] collaboration state restored from indexeddb", {
+          documentId: id,
+          fragmentLength: getCollaborationFragmentLength(ydoc),
+        });
+
+        setLocalPersistenceReady(true);
+        setCollaborationSessionKey((value) => value + 1);
+      } catch (error) {
+        if (!cancelled) {
+          console.error("[documents/editor] local persistence failed", error);
+          setCollaborationError("Failed to restore local document state");
+        }
+      } finally {
+        if (!cancelled) {
+          setIsLoadingLocalPersistence(false);
+        }
+      }
+    };
+
+    initializeLocalPersistence();
+
+    return () => {
+      cancelled = true;
+      providerRef.current?.destroy();
+      persistence.destroy();
+      ydoc.destroy();
+      providerRef.current = null;
+      persistenceRef.current = null;
+      yDocRef.current = null;
+    };
+  }, [
+    collaborationConfigured,
+    id,
+  ]);
+
+  useEffect(() => {
+    if (
+      !collaborationConfigured ||
+      !collaborationToken ||
+      !id ||
+      !collaborationUrl ||
+      !localPersistenceReady ||
+      !yDocRef.current
+    ) {
       return;
     }
 
     providerRef.current?.destroy();
-    yDocRef.current?.destroy();
-
-    const ydoc = new Y.Doc();
-    if (collaborationState?.yjsState) {
-      Y.applyUpdate(ydoc, base64ToUint8Array(collaborationState.yjsState));
-      console.log("[documents/editor] collaboration state restored", {
-        documentId: id,
-        updatedAt: collaborationState.yjsStateUpdatedAt,
-      });
-    }
 
     const provider = new HocuspocusProvider({
       url: collaborationUrl,
       name: String(id),
-      document: ydoc,
+      document: yDocRef.current,
       token: collaborationToken,
       onAuthenticated() {
         console.log("[documents/editor] collaboration authenticated", {
@@ -241,16 +294,18 @@ const Editor = ({ documentContent, id, canEdit }: EditorProps) => {
     });
 
     providerRef.current = provider;
-    yDocRef.current = ydoc;
-    setCollaborationSessionKey((value) => value + 1);
 
     return () => {
       provider.destroy();
-      ydoc.destroy();
       providerRef.current = null;
-      yDocRef.current = null;
     };
-  }, [collaborationConfigured, collaborationToken, collaborationUrl, collaborationReady, id]);
+  }, [
+    collaborationConfigured,
+    collaborationToken,
+    collaborationUrl,
+    id,
+    localPersistenceReady,
+  ]);
 
   const saveContent = useDebounce(async (html: string) => {
     if (!canEdit) {
@@ -273,27 +328,6 @@ const Editor = ({ documentContent, id, canEdit }: EditorProps) => {
     }
   }, 2000);
 
-  const persistCollaborationState = useDebounce(async (html: string) => {
-    if (!canEdit || !id || !yDocRef.current) {
-      return;
-    }
-
-    try {
-      const encodedState = Y.encodeStateAsUpdate(yDocRef.current);
-      await updateCollaborationStateById({
-        id,
-        yjsState: uint8ArrayToBase64(encodedState),
-        documentContent: html,
-      });
-      console.log("[documents/editor] collaboration state persisted", {
-        documentId: id,
-        yjsBytes: encodedState.byteLength,
-      });
-    } catch (error) {
-      console.error("[documents/editor] failed to persist collaboration state", error);
-    }
-  }, 1500);
-
   const editor = useEditor(
     {
       autofocus: canEdit,
@@ -303,9 +337,8 @@ const Editor = ({ documentContent, id, canEdit }: EditorProps) => {
         if (collaborationActive) {
           const fragment = yDocRef.current?.getXmlFragment("default") as { length?: number } | undefined;
           const isEmpty = !fragment || (fragment.length ?? 0) === 0;
-          const fallbackContent = collaborationState?.documentContent ?? documentContent;
-          if (isEmpty && fallbackContent) {
-            editor.commands.setContent(fallbackContent);
+          if (isEmpty && documentContent) {
+            editor.commands.setContent(documentContent);
           }
         }
 
@@ -334,7 +367,7 @@ const Editor = ({ documentContent, id, canEdit }: EditorProps) => {
         setStatus("typing");
 
         if (collaborationActive) {
-          persistCollaborationState(html);
+          saveContent(html);
           return;
         }
 
@@ -417,15 +450,11 @@ const Editor = ({ documentContent, id, canEdit }: EditorProps) => {
         documentId: id,
         contentSize: unsavedContent.length,
       });
-      if (collaborationActive) {
-        persistCollaborationState(unsavedContent);
-      } else {
-        saveContent(unsavedContent);
-      }
+      saveContent(unsavedContent);
       editor?.commands.setContent(unsavedContent);
       localStorage.removeItem(`unsaved-${id}`);
     }
-  }, [canEdit, collaborationActive, editor, id, persistCollaborationState, saveContent]);
+  }, [canEdit, editor, id, saveContent]);
 
   useEffect(() => {
     if (!canEdit || collaborationActive) {
@@ -459,16 +488,7 @@ const Editor = ({ documentContent, id, canEdit }: EditorProps) => {
         try {
           setStatus("saving");
           const html = editor.getHTML();
-          if (collaborationActive && yDocRef.current) {
-            const encodedState = Y.encodeStateAsUpdate(yDocRef.current);
-            await updateCollaborationStateById({
-              id: id!,
-              yjsState: uint8ArrayToBase64(encodedState),
-              documentContent: html,
-            });
-          } else {
-            await updateContentById({ id: id!, documentContent: html });
-          }
+          await updateContentById({ id: id!, documentContent: html });
           resetStatusAfterSave();
         } catch (err) {
           console.error("Manual save failed:", err);
@@ -487,11 +507,10 @@ const Editor = ({ documentContent, id, canEdit }: EditorProps) => {
     id,
     resetStatusAfterSave,
     setStatus,
-    updateCollaborationStateById,
     updateContentById,
   ]);
 
-  if (collaborationConfigured && (!collaborationReady || (isLoadingCollaboration && !collaborationToken))) {
+  if (collaborationConfigured && isLoadingCollaboration && !collaborationToken) {
     return <FullscreenLoader label="Preparing collaboration..." />;
   }
 
@@ -501,6 +520,13 @@ const Editor = ({ documentContent, id, canEdit }: EditorProps) => {
         Failed to initialize collaboration.
       </div>
     );
+  }
+
+  if (
+    collaborationConfigured &&
+    (!localPersistenceReady || isLoadingLocalPersistence)
+  ) {
+    return <FullscreenLoader label="Preparing collaboration..." />;
   }
 
   return (

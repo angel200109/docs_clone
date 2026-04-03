@@ -9,7 +9,10 @@ export default defineSchema({
     leftMargin: v.optional(v.float64()),
     rightMargin: v.optional(v.float64()),
     yjsState: v.optional(v.string()),
+    yjsStateBytes: v.optional(v.number()),
+    yjsStateHash: v.optional(v.string()),
     yjsStateUpdatedAt: v.optional(v.number()),
+    yjsStateVersion: v.optional(v.number()),
   })
     .index("by_owner_id", ["ownerId"])
     .searchIndex("search_title", {

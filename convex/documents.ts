@@ -1,4 +1,4 @@
-import { mutation, query } from "./_generated/server";
+import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import { paginationOptsValidator } from "convex/server";
 import { LEFT_MARGIN_DEFUALT, RIGHT_MARGIN_DEFUALT } from "@/constants/margin";
@@ -192,7 +192,10 @@ export const getCollaborationStateById = query({
 
     return {
       yjsState: document.yjsState,
+      yjsStateBytes: document.yjsStateBytes,
+      yjsStateHash: document.yjsStateHash,
       yjsStateUpdatedAt: document.yjsStateUpdatedAt,
+      yjsStateVersion: document.yjsStateVersion,
       documentContent: document.documentContent,
     };
   },
@@ -234,6 +237,60 @@ export const updateCollaborationStateById = mutation({
     return {
       success: true,
       id: args.id,
+      updatedAt: now,
+    };
+  },
+});
+
+export const getCollaborationStateForServer = internalQuery({
+  args: { id: v.id("documents") },
+  handler: async (ctx, { id }) => {
+    const document = await ctx.db.get(id);
+
+    if (!document) {
+      return null;
+    }
+
+    return {
+      id: document._id,
+      yjsState: document.yjsState,
+      yjsStateBytes: document.yjsStateBytes,
+      yjsStateHash: document.yjsStateHash,
+      yjsStateUpdatedAt: document.yjsStateUpdatedAt,
+      yjsStateVersion: document.yjsStateVersion,
+      documentContent: document.documentContent,
+    };
+  },
+});
+
+export const storeCollaborationStateFromServer = internalMutation({
+  args: {
+    id: v.id("documents"),
+    yjsStateBytes: v.number(),
+    yjsStateHash: v.string(),
+    yjsState: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const document = await ctx.db.get(args.id);
+    if (!document) {
+      throw new Error("Document not found");
+    }
+
+    const now = Date.now();
+    const nextVersion = (document.yjsStateVersion ?? 0) + 1;
+
+    await ctx.db.patch(args.id, {
+      yjsState: args.yjsState,
+      yjsStateBytes: args.yjsStateBytes,
+      yjsStateHash: args.yjsStateHash,
+      yjsStateUpdatedAt: now,
+      yjsStateVersion: nextVersion,
+    });
+
+    return {
+      success: true,
+      id: args.id,
+      version: nextVersion,
       updatedAt: now,
     };
   },
